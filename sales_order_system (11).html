@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sales Order System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div id="app"></div>
+    <script>
+const App = {
+  stockData: [],
+  salesOrders: [],
+  currentOrder: [],
+  selectedGroup: null,
+  activeTab: "inventory",
+  salesTypeFilter: "ALL",
+  companyFilter: "ALL",
+  searchTerm: "",
+  APPS_SCRIPT_URL: "",
+  isLoading: false,
+  lastUpdated: "",
+
+  init() {
+    const url = localStorage.getItem("appsScriptUrl");
+    if (url) {
+      this.APPS_SCRIPT_URL = url;
+      this.loadFromGoogleSheets();
+    } else {
+      this.showSetup();
+    }
+    this.loadOrdersFromStorage();
+  },
+
+  showSetup() {
+    document.getElementById("app").innerHTML = `<div class="min-h-screen flex items-center justify-center p-6"><div class="bg-white rounded-xl shadow-2xl p-8 max-w-3xl w-full"><div class="text-center mb-8"><div class="text-6xl mb-4">🔗</div><h1 class="text-3xl font-bold mb-2">Setup Google Sheets</h1><p class="text-gray-600">Connect your inventory</p></div><div class="bg-blue-50 border-l-4 border-blue-500 p-6 mb-6"><h3 class="font-bold text-blue-900 mb-3">Setup Steps:</h3><ol class="space-y-2 text-sm text-gray-700"><li>1. Open Google Sheet</li><li>2. Extensions → Apps Script</li><li>3. Copy & paste the Apps Script code</li><li>4. Deploy → New deployment → Web app</li><li>5. Who has access: <strong>Anyone</strong></li><li>6. Copy Web App URL and paste below</li></ol></div><button onclick="App.setAppsScriptUrl()" class="w-full bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold">🔗 Enter Apps Script URL</button></div></div>`;
+  },
+
+  setAppsScriptUrl() {
+    const url = prompt("Paste Apps Script Web App URL:\n\nCurrent: " + (this.APPS_SCRIPT_URL || "Not set"));
+    if (url) {
+      this.APPS_SCRIPT_URL = url.trim();
+      localStorage.setItem("appsScriptUrl", this.APPS_SCRIPT_URL);
+      this.loadFromGoogleSheets();
+    }
+  },
+
+  // Manual refresh entry point (called from the 🔄 button)
+  refreshData() {
+    this.loadFromGoogleSheets();
+  },
+
+  async loadFromGoogleSheets() {
+    this.isLoading = true;
+    this.render();
+    try {
+      const res = await fetch(this.APPS_SCRIPT_URL + "?action=getData");
+      const data = await res.json();
+      if (data.success) {
+        this.stockData = data.data.map(t => ({
+          stockGroup: String(t["Stock Group"] || t["Stock Gro"] || "").trim(),
+          companyName: String(t["Compny Name"] || t["Company Name"] || "").trim(),
+          nameAlias: String(t["Name Alias"] || "").trim(),
+          bor: parseInt(t.BOR) || 0,
+          sabu: parseInt(t.SABU) || 0,
+          yyy: parseInt(t.YYY) || 0,
+          baag: parseInt(t.BAAG) || 0,
+          bm: parseInt(t.BM) || 0,
+          grandTotal: parseInt(t["Grand Total"]) || 0,
+          caseQty: parseInt(t["Case Of Containt"] || t["Case"]) || 0,
+          rateE: parseInt(t["Rate E"]) || 0,
+          rateF: parseInt(t["Rate F"]) || 0,
+          rateD: parseInt(t["Rate D"]) || 0,
+          salesType: String(t["Sales type"] || t["Sales Type"] || "LAGAN").trim().toUpperCase()
+        })).filter(t => t.stockGroup && t.nameAlias && t.grandTotal > 0);
+        console.log("Loaded", this.stockData.length, "items");
+        this.isLoading = false;
+        this.lastUpdated = (new Date).toLocaleTimeString("en-IN");
+        this.render();
+        // NOTE: automatic 30s polling has been removed on purpose.
+        // Data now refreshes only when the user taps the 🔄 button.
+      } else {
+        throw Error("Failed to load");
+      }
+    } catch (e) {
+      console.error("Load error:", e);
+      this.isLoading = false;
+      alert("Error loading from Google Sheets. Check console for details.");
+      this.showSetup();
+    }
+  },
+
+  async updateStockInSheet(orderData) {
+    try {
+      const res = await fetch(this.APPS_SCRIPT_URL, {
+        method: "POST",
+        body: new URLSearchParams({ action: "updateStock", orderData: JSON.stringify(orderData) })
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) {
+      console.error("Update error:", e);
+      return false;
+    }
+  },
+
+  loadOrdersFromStorage() {
+    const t = localStorage.getItem("salesOrders");
+    if (t) this.salesOrders = JSON.parse(t);
+  },
+
+  saveOrdersToStorage() {
+    localStorage.setItem("salesOrders", JSON.stringify(this.salesOrders));
+  },
+
+  getUniqueGroups() {
+    const t = [...new Set(this.stockData.map(t => t.stockGroup))];
+    return t.sort((a, b) => {
+      const na = parseInt(a.replace(/[^0-9]/g, "")) || 0;
+      const nb = parseInt(b.replace(/[^0-9]/g, "")) || 0;
+      return na !== nb ? na - nb : a.localeCompare(b);
+    });
+  },
+
+  getUniqueCompanies() {
+    return [...new Set(this.stockData.map(t => t.companyName).filter(Boolean))].sort();
+  },
+
+  getFilteredStock() {
+    let t = this.stockData;
+    if ("ALL" !== this.salesTypeFilter) t = t.filter(t => t.salesType === this.salesTypeFilter);
+    if ("ALL" !== this.companyFilter) t = t.filter(t => t.companyName === this.companyFilter);
+    if (this.selectedGroup) t = t.filter(t => t.stockGroup === this.selectedGroup);
+    if (this.searchTerm) {
+      const q = this.searchTerm.toLowerCase();
+      t = t.filter(t =>
+        t.nameAlias.toLowerCase().includes(q) ||
+        t.stockGroup.toLowerCase().includes(q) ||
+        t.companyName.toLowerCase().includes(q)
+      );
+    }
+    return t;
+  },
+
+  addToOrder(t) {
+    const e = JSON.parse(t);
+    const a = { ...e, orderId: Date.now(), quantity: 1, selectedRate: e.rateE, borQty: 0, sabuQty: 0, yyyQty: 0, baagQty: 0, bmQty: 0 };
+    this.currentOrder.push(a);
+    alert(`${e.nameAlias} added!`);
+    this.render();
+  },
+
+  removeFromOrder(t) {
+    this.currentOrder = this.currentOrder.filter(e => e.orderId !== t);
+    this.render();
+  },
+
+  updateOrderItem(t, e, a) {
+    this.currentOrder = this.currentOrder.map(s => s.orderId === t ? { ...s, [e]: a } : s);
+    this.render();
+  },
+
+  createSalesOrder() {
+    if (0 === this.currentOrder.length) return void alert("Add items first");
+    const t = prompt("Customer Name:");
+    if (t) {
+      const e = {
+        id: Date.now(),
+        customerName: t,
+        date: (new Date).toISOString(),
+        items: JSON.parse(JSON.stringify(this.currentOrder)),
+        status: "Ready for Dispatch",
+        createdAt: (new Date).toLocaleString("en-IN")
+      };
+      this.salesOrders.push(e);
+      this.saveOrdersToStorage();
+      this.currentOrder = [];
+      this.activeTab = "dispatch";
+      alert("Order created!");
+      this.render();
+    }
+  },
+
+  async markAsDispatched(t) {
+    if (!confirm("Mark as dispatched? Stock will be deducted.")) return;
+    const e = this.salesOrders.find(e => e.id === t);
+    if (!e) return;
+    const a = document.createElement("div");
+    a.className = "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50";
+    a.innerHTML = '<div class="bg-white p-6 rounded-lg text-center"><div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div><p class="font-semibold">Updating...</p></div>';
+    document.body.appendChild(a);
+    const s = await this.updateStockInSheet(e);
+    document.body.removeChild(a);
+    if (s) {
+      e.items.forEach(t => {
+        const e = this.stockData.find(e => e.nameAlias === t.nameAlias);
+        if (e) {
+          e.bor -= t.borQty;
+          e.sabu -= t.sabuQty;
+          e.yyy -= t.yyyQty;
+          e.baag -= t.baagQty;
+          e.bm -= t.bmQty;
+          e.grandTotal = e.bor + e.sabu + e.yyy + e.baag + e.bm;
+        }
+      });
+      this.salesOrders = this.salesOrders.map(o => o.id === t ? { ...o, status: "Dispatched", dispatchedAt: (new Date).toLocaleString("en-IN") } : o);
+      this.saveOrdersToStorage();
+      alert("✅ Dispatched!");
+      this.render();
+    } else {
+      alert("❌ Error updating Sheet");
+    }
+  },
+
+  cancelOrder(t) {
+    if (confirm("Cancel this order?")) {
+      this.salesOrders = this.salesOrders.filter(e => e.id !== t);
+      this.saveOrdersToStorage();
+      alert("Order cancelled");
+      this.render();
+    }
+  },
+
+  editGodownAssignment(t) {
+    const e = this.salesOrders.find(e => e.id === t);
+    if (!e) return;
+    const a = document.createElement("div");
+    a.className = "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4";
+    a.innerHTML = `<div class="bg-white rounded-lg p-6 max-w-2xl w-full max-h-screen overflow-y-auto"><div class="flex justify-between mb-4"><h3 class="text-xl font-bold">Edit Godown</h3><button onclick="this.closest('.fixed').remove()" class="text-2xl">×</button></div><div class="space-y-4">${e.items.map((t, i) => `<div class="border rounded p-4"><div class="font-semibold mb-3">${t.nameAlias}</div><div class="grid grid-cols-3 gap-3"><div><label class="text-xs">BOR</label><input type="number" id="bor_${i}" value="${t.borQty}" min="0" class="w-full p-2 border rounded"></div><div><label class="text-xs">SABU</label><input type="number" id="sabu_${i}" value="${t.sabuQty}" min="0" class="w-full p-2 border rounded"></div><div><label class="text-xs">YYY</label><input type="number" id="yyy_${i}" value="${t.yyyQty}" min="0" class="w-full p-2 border rounded"></div><div><label class="text-xs">BAAG</label><input type="number" id="baag_${i}" value="${t.baagQty || 0}" min="0" class="w-full p-2 border rounded"></div><div><label class="text-xs">BM</label><input type="number" id="bm_${i}" value="${t.bmQty || 0}" min="0" class="w-full p-2 border rounded"></div></div></div>`).join("")}</div><div class="mt-6 flex gap-3"><button onclick="App.saveGodownEdit(${t})" class="flex-1 bg-blue-600 text-white py-2 rounded">Save</button><button onclick="this.closest('.fixed').remove()" class="flex-1 bg-gray-300 py-2 rounded">Cancel</button></div></div>`;
+    document.body.appendChild(a);
+  },
+
+  saveGodownEdit(t) {
+    const e = this.salesOrders.find(e => e.id === t);
+    if (e) {
+      e.items.forEach((t, i) => {
+        const bor = document.getElementById(`bor_${i}`);
+        const sabu = document.getElementById(`sabu_${i}`);
+        const yyy = document.getElementById(`yyy_${i}`);
+        const baag = document.getElementById(`baag_${i}`);
+        const bm = document.getElementById(`bm_${i}`);
+        if (bor) t.borQty = parseInt(bor.value) || 0;
+        if (sabu) t.sabuQty = parseInt(sabu.value) || 0;
+        if (yyy) t.yyyQty = parseInt(yyy.value) || 0;
+        if (baag) t.baagQty = parseInt(baag.value) || 0;
+        if (bm) t.bmQty = parseInt(bm.value) || 0;
+      });
+      this.saveOrdersToStorage();
+      document.querySelector(".fixed").remove();
+      alert("Updated!");
+      this.render();
+    }
+  },
+
+  exportToExcel(t) {
+    const e = this.salesOrders.find(e => e.id === t);
+    if (!e) return;
+    let a = "Customer,Item,Quantity,Rate,BOR,SABU,YYY,BAAG,BM,Total\n";
+    e.items.forEach(t => {
+      a += `${e.customerName},"${t.nameAlias}",${t.quantity},${t.selectedRate},${t.borQty},${t.sabuQty},${t.yyyQty},${t.baagQty || 0},${t.bmQty || 0},${t.quantity * t.selectedRate}\n`;
+    });
+    const s = new Blob([a], { type: "text/csv" });
+    const i = window.URL.createObjectURL(s);
+    const r = document.createElement("a");
+    r.href = i;
+    r.download = `Order_${e.customerName}_${e.id}.csv`;
+    r.click();
+  },
+
+  exportToPDF(t) {
+    const e = this.salesOrders.find(e => e.id === t);
+    if (!e) return;
+    const a = window.open("", "", "width=800,height=600");
+    const s = e.items.reduce((t, e) => t + e.quantity * e.selectedRate, 0);
+    a.document.write(`<html><head><title>Order - ${e.customerName}</title><style>body{font-family:Arial;padding:20px}h1{color:#2563eb}table{width:100%;border-collapse:collapse;margin-top:20px}th,td{border:1px solid #ddd;padding:8px}th{background:#2563eb;color:white}.total{font-weight:bold;font-size:18px;margin-top:20px}</style></head><body><h1>Sales Order</h1><p><strong>Customer:</strong> ${e.customerName}</p><p><strong>Date:</strong> ${e.createdAt}</p><p><strong>Status:</strong> ${e.status}</p>${"Dispatched" === e.status ? `<p><strong>Dispatched:</strong> ${e.dispatchedAt}</p>` : ""}<table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>BOR</th><th>SABU</th><th>YYY</th><th>BAAG</th><th>BM</th><th>Amount</th></tr></thead><tbody>${e.items.map(t => `<tr><td>${t.nameAlias}</td><td>${t.quantity}</td><td>₹${t.selectedRate}</td><td>${t.borQty}</td><td>${t.sabuQty}</td><td>${t.yyyQty}</td><td>${t.baagQty || 0}</td><td>${t.bmQty || 0}</td><td>₹${t.quantity * t.selectedRate}</td></tr>`).join("")}</tbody></table><p class="total">Total: ₹${s}</p><script>window.onload=function(){window.print()}<\/script></body></html>`);
+    a.document.close();
+  },
+
+  // ---- Filter bar shared by the group-grid view and the flat item-list view ----
+  renderFilterBar() {
+    const groups = this.getUniqueGroups();
+    const companies = this.getUniqueCompanies();
+    const filteredCount = this.getFilteredStock().length;
+    return `<div class="bg-white rounded shadow p-4 mb-4">
+      <div class="mb-3">
+        <label class="text-sm font-semibold mb-1 text-gray-700 block">🔍 Search (item / stock group / company):</label>
+        <input type="text" id="searchBox" placeholder="Type to search..." value="${this.searchTerm}" class="w-full p-2 border rounded">
+      </div>
+      <div class="text-sm font-semibold mb-2 text-gray-700">🏷️ Sales Type Filter:</div>
+      <div class="flex gap-2 flex-wrap mb-3">${["ALL", "LAGAN", "DIWALI", "DIW"].map(t => `<button onclick="App.setSalesType('${t}')" class="px-4 py-2 rounded text-sm font-medium transition-colors ${this.salesTypeFilter === t ? "bg-blue-600 text-white shadow-lg" : "bg-gray-100 hover:bg-gray-200 text-gray-700"}">${t}</button>`).join("")}</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-semibold text-gray-700 block mb-1">📦 Stock Group:</label>
+          <select onchange="if(this.value==='ALL'){App.backToGroups()}else{App.selectGroup(this.value)}" class="w-full p-2 border rounded text-sm">
+            <option value="ALL" ${this.selectedGroup ? "" : "selected"}>All Groups</option>
+            ${groups.map(g => `<option value="${g}" ${this.selectedGroup === g ? "selected" : ""}>${g}</option>`).join("")}
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-700 block mb-1">🏢 Company:</label>
+          <select onchange="App.setCompanyFilter(this.value)" class="w-full p-2 border rounded text-sm">
+            <option value="ALL" ${"ALL" === this.companyFilter ? "selected" : ""}>All Companies</option>
+            ${companies.map(c => `<option value="${c}" ${this.companyFilter === c ? "selected" : ""}>${c}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="text-xs text-gray-500 mt-2">Active: ${this.salesTypeFilter}${this.companyFilter !== "ALL" ? " • Company: " + this.companyFilter : ""}${this.selectedGroup ? " • Group: " + this.selectedGroup : ""} • Showing ${filteredCount} items</div>
+    </div>`;
+  },
+
+  renderItemCard(t) {
+    return `<div class="bg-white p-4 rounded shadow"><div class="flex justify-between mb-3"><div><div class="font-bold text-lg">${t.nameAlias}</div><div class="text-sm text-gray-500">${t.companyName}</div><div class="text-xs text-blue-600 mt-1">${t.salesType}</div></div><button onclick='App.addToOrder(${JSON.stringify(JSON.stringify(t))})' class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700">➕ Add</button></div><div class="grid grid-cols-6 gap-2 mb-3 bg-gray-50 p-3 rounded"><div class="text-center"><div class="text-xs">BOR</div><div class="font-bold text-blue-600">${t.bor}</div></div><div class="text-center"><div class="text-xs">SABU</div><div class="font-bold text-green-600">${t.sabu}</div></div><div class="text-center"><div class="text-xs">YYY</div><div class="font-bold text-purple-600">${t.yyy}</div></div><div class="text-center"><div class="text-xs">BAAG</div><div class="font-bold text-pink-600">${t.baag}</div></div><div class="text-center"><div class="text-xs">BM</div><div class="font-bold text-indigo-600">${t.bm}</div></div><div class="text-center bg-orange-100 rounded"><div class="text-xs">Total</div><div class="font-bold text-orange-600">${t.grandTotal}</div></div></div><div class="grid grid-cols-4 gap-2 text-sm"><div class="text-center"><div class="text-xs">Case</div><div>${t.caseQty}</div></div><div class="text-center"><div class="text-xs">Rate E</div><div class="text-green-700">₹${t.rateE}</div></div><div class="text-center"><div class="text-xs">Rate F</div><div class="text-purple-700">₹${t.rateF}</div></div><div class="text-center"><div class="text-xs">Rate D</div><div class="text-orange-700">₹${t.rateD}</div></div></div></div>`;
+  },
+
+  renderInventory() {
+    const groups = this.getUniqueGroups();
+    const items = this.getFilteredStock();
+    // Flat item-list view kicks in when a group is selected via card-click,
+    // OR when the Company dropdown filter is used, OR when the user is searching
+    // (by item name, stock group, or company name).
+    const flatMode = !!this.selectedGroup || "ALL" !== this.companyFilter || !!this.searchTerm.trim();
+    const filterBar = this.renderFilterBar();
+
+    if (flatMode) {
+      if (items.length > 0) {
+        return `<div class="p-4">${filterBar}<button onclick="App.backToGroups()" class="text-blue-600 mb-4">← Back to Groups</button><div class="space-y-3">${items.map(t => this.renderItemCard(t)).join("")}</div></div>`;
+      } else {
+        return `<div class="p-4">${filterBar}<button onclick="App.backToGroups()" class="text-blue-600 mb-4">← Back</button><div class="text-center py-12 text-gray-500"><p class="text-lg">No items found${this.selectedGroup ? " in " + this.selectedGroup : ""}</p><p class="text-sm mt-2">Try different filters</p></div></div>`;
+      }
+    }
+
+    return `<div class="p-4">${filterBar}<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">${groups.map(g => {
+      const groupItems = this.stockData.filter(e => e.stockGroup === g && ("ALL" === this.salesTypeFilter || e.salesType === this.salesTypeFilter));
+      const total = groupItems.reduce((t, e) => t + e.grandTotal, 0);
+      return groupItems.length > 0 ? `<button onclick="App.selectGroup('${g}')" class="bg-white p-4 rounded shadow hover:shadow-lg transition-all"><div class="font-bold text-lg mb-1">${g}</div><div class="text-sm text-gray-500">${groupItems.length} items</div><div class="text-xs text-blue-600 font-semibold mt-2">Stock: ${total}</div></button>` : "";
+    }).join("")}</div></div>`;
+  },
+
+  renderSalesOrder() {
+    if (0 === this.currentOrder.length) return '<div class="p-4 text-center py-12"><div class="text-6xl mb-4">🛒</div><p class="mb-4">No items</p><button onclick="App.setTab(\'inventory\')" class="bg-blue-600 text-white px-6 py-2 rounded">Go to Inventory</button></div>';
+    const total = this.currentOrder.reduce((t, e) => t + e.quantity * e.selectedRate, 0);
+    return `<div class="p-4"><h2 class="text-xl font-bold mb-4">Order (${this.currentOrder.length})</h2><div class="space-y-4 mb-4">${this.currentOrder.map(t => `<div class="bg-white p-4 rounded shadow"><div class="flex justify-between mb-3"><div class="font-bold">${t.nameAlias}</div><button onclick="App.removeFromOrder(${t.orderId})" class="text-red-600">✕</button></div><div class="grid grid-cols-2 gap-3 mb-3"><div><label class="text-xs">Qty</label><input type="number" value="${t.quantity}" min="1" onchange="App.updateOrderItem(${t.orderId},'quantity',parseInt(this.value))" class="w-full p-2 border rounded"></div><div><label class="text-xs">Rate</label><select onchange="App.updateOrderItem(${t.orderId},'selectedRate',parseInt(this.value))" class="w-full p-2 border rounded"><option value="${t.rateE}" ${t.selectedRate === t.rateE ? "selected" : ""}>E - ₹${t.rateE}</option><option value="${t.rateF}" ${t.selectedRate === t.rateF ? "selected" : ""}>F - ₹${t.rateF}</option><option value="${t.rateD}" ${t.selectedRate === t.rateD ? "selected" : ""}>D - ₹${t.rateD}</option></select></div></div><div class="bg-blue-50 p-3 rounded"><div class="text-xs font-semibold mb-2">Godown:</div><div class="grid grid-cols-3 gap-2"><div><label class="text-xs">BOR (${t.bor})</label><input type="number" value="${t.borQty}" min="0" max="${t.bor}" onchange="App.updateOrderItem(${t.orderId},'borQty',parseInt(this.value)||0)" class="w-full p-1 border rounded text-sm"></div><div><label class="text-xs">SABU (${t.sabu})</label><input type="number" value="${t.sabuQty}" min="0" max="${t.sabu}" onchange="App.updateOrderItem(${t.orderId},'sabuQty',parseInt(this.value)||0)" class="w-full p-1 border rounded text-sm"></div><div><label class="text-xs">YYY (${t.yyy})</label><input type="number" value="${t.yyyQty}" min="0" max="${t.yyy}" onchange="App.updateOrderItem(${t.orderId},'yyyQty',parseInt(this.value)||0)" class="w-full p-1 border rounded text-sm"></div><div><label class="text-xs">BAAG (${t.baag})</label><input type="number" value="${t.baagQty || 0}" min="0" max="${t.baag}" onchange="App.updateOrderItem(${t.orderId},'baagQty',parseInt(this.value)||0)" class="w-full p-1 border rounded text-sm"></div><div><label class="text-xs">BM (${t.bm})</label><input type="number" value="${t.bmQty || 0}" min="0" max="${t.bm}" onchange="App.updateOrderItem(${t.orderId},'bmQty',parseInt(this.value)||0)" class="w-full p-1 border rounded text-sm"></div></div></div><div class="text-right font-bold text-lg text-green-600 mt-2">₹${t.quantity * t.selectedRate}</div></div>`).join("")}</div><div class="bg-white p-4 rounded shadow"><div class="text-xl font-bold mb-2">Total: ₹${total}</div><button onclick="App.createSalesOrder()" class="w-full bg-green-600 text-white py-3 rounded font-bold">Create Order</button></div></div>`;
+  },
+
+  renderDispatch() {
+    if (0 === this.salesOrders.length) return '<div class="p-4 text-center py-12"><div class="text-6xl mb-4">🚚</div><p>No orders</p></div>';
+    return `<div class="p-4"><h2 class="text-xl font-bold mb-4">Dispatch Orders</h2><div class="overflow-x-auto bg-white rounded shadow"><table class="w-full text-sm"><thead class="bg-blue-600 text-white"><tr><th class="p-3 text-left">ID</th><th class="p-3 text-left">Customer</th><th class="p-3 text-left">Date</th><th class="p-3 text-left">Items</th><th class="p-3 text-right">Total</th><th class="p-3 text-center">Status</th><th class="p-3 text-center">Actions</th></tr></thead><tbody>${this.salesOrders.map(t => {
+      const total = t.items.reduce((t, e) => t + e.quantity * e.selectedRate, 0);
+      return `<tr class="border-b hover:bg-gray-50"><td class="p-3 font-mono text-xs">#${t.id.toString().slice(-6)}</td><td class="p-3 font-semibold">${t.customerName}</td><td class="p-3 text-xs text-gray-600">${t.createdAt}</td><td class="p-3"><details><summary class="cursor-pointer font-semibold text-blue-600">${t.items.length} items</summary><div class="mt-2 space-y-1 text-xs bg-gray-50 p-2 rounded">${t.items.map(t => `<div class="flex justify-between"><span>${t.nameAlias}</span><span>₹${t.quantity * t.selectedRate}</span></div><div class="text-xs text-gray-500 pl-2">BOR(${t.borQty}) SABU(${t.sabuQty}) YYY(${t.yyyQty}) BAAG(${t.baagQty || 0}) BM(${t.bmQty || 0})</div>`).join("")}</div></details></td><td class="p-3 text-right font-bold text-green-600">₹${total}</td><td class="p-3 text-center"><span class="px-2 py-1 rounded-full text-xs font-semibold ${"Dispatched" === t.status ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"}">${t.status}</span>${"Dispatched" === t.status ? `<div class="text-xs text-gray-500 mt-1">${t.dispatchedAt}</div>` : ""}</td><td class="p-3"><div class="flex gap-1 justify-center flex-wrap">${"Ready for Dispatch" === t.status ? `<button onclick="App.editGodownAssignment(${t.id})" class="bg-blue-500 text-white px-2 py-1 rounded text-xs">✏️</button><button onclick="App.markAsDispatched(${t.id})" class="bg-green-500 text-white px-2 py-1 rounded text-xs">✓</button><button onclick="App.cancelOrder(${t.id})" class="bg-red-500 text-white px-2 py-1 rounded text-xs">✕</button>` : ""}<button onclick="App.exportToExcel(${t.id})" class="bg-emerald-500 text-white px-2 py-1 rounded text-xs">📊</button><button onclick="App.exportToPDF(${t.id})" class="bg-purple-500 text-white px-2 py-1 rounded text-xs">📄</button></div></td></tr>`;
+    }).join("")}</tbody></table></div></div>`;
+  },
+
+  render() {
+    const app = document.getElementById("app");
+    if (!this.APPS_SCRIPT_URL || 0 === this.stockData.length) {
+      if (this.isLoading) {
+        app.innerHTML = '<div class="flex items-center justify-center min-h-screen"><div class="text-center"><div class="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto mb-4"></div><p class="font-semibold">Loading...</p></div></div>';
+      }
+      return;
+    }
+    app.innerHTML = `<div class="bg-blue-600 text-white p-4 shadow-lg"><div class="flex justify-between items-center"><div><h1 class="text-2xl font-bold">Live Sales Order</h1><p class="text-sm text-blue-100">${this.stockData.length} items${this.lastUpdated ? " • Updated: " + this.lastUpdated : ""}</p></div><div class="flex gap-2"><button onclick="App.refreshData()" class="bg-blue-700 px-3 py-1.5 rounded text-xs" title="Manual refresh from Google Sheets">${this.isLoading ? "⏳" : "🔄"}</button><button onclick="App.setAppsScriptUrl()" class="bg-blue-700 px-3 py-1.5 rounded text-xs">⚙️</button></div></div></div><div class="bg-white shadow flex"><button onclick="App.setTab('inventory')" class="flex-1 py-3 font-semibold ${"inventory" === this.activeTab ? "bg-blue-600 text-white" : "text-gray-600"}">📦</button><button onclick="App.setTab('sales-order')" class="flex-1 py-3 font-semibold relative ${"sales-order" === this.activeTab ? "bg-blue-600 text-white" : "text-gray-600"}">🛒${this.currentOrder.length > 0 ? `<span class="absolute top-1 right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">${this.currentOrder.length}</span>` : ""}</button><button onclick="App.setTab('dispatch')" class="flex-1 py-3 font-semibold ${"dispatch" === this.activeTab ? "bg-blue-600 text-white" : "text-gray-600"}">🚚 (${this.salesOrders.length})</button></div><div>${"inventory" === this.activeTab ? this.renderInventory() : ""} ${"sales-order" === this.activeTab ? this.renderSalesOrder() : ""} ${"dispatch" === this.activeTab ? this.renderDispatch() : ""}</div>`;
+    const searchBox = document.getElementById("searchBox");
+    if (searchBox) {
+      searchBox.oninput = e => {
+        this.searchTerm = e.target.value;
+        const cursorPos = e.target.selectionStart;
+        this.render();
+        // Re-render wipes and rebuilds the input, which drops focus.
+        // Put focus + cursor back so typing feels continuous.
+        const newSearchBox = document.getElementById("searchBox");
+        if (newSearchBox) {
+          newSearchBox.focus();
+          newSearchBox.setSelectionRange(cursorPos, cursorPos);
+        }
+      };
+    }
+  },
+
+  setTab(t) {
+    this.activeTab = t;
+    this.render();
+  },
+
+  setSalesType(t) {
+    this.salesTypeFilter = t;
+    this.render();
+  },
+
+  setCompanyFilter(t) {
+    this.companyFilter = t;
+    this.render();
+  },
+
+  selectGroup(t) {
+    this.selectedGroup = t;
+    this.searchTerm = "";
+    this.render();
+  },
+
+  backToGroups() {
+    this.selectedGroup = null;
+    this.searchTerm = "";
+    this.companyFilter = "ALL";
+    this.render();
+  }
+};
+
+window.onload = () => App.init();
+    </script>
+</body>
+</html>
